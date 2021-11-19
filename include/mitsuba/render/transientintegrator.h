@@ -16,6 +16,7 @@
 #include <mitsuba/render/records.h>
 #include <mitsuba/render/scene.h>
 #include <mitsuba/render/shape.h>
+#include <mitsuba/render/emitter.h>
 
 NAMESPACE_BEGIN(mitsuba)
 
@@ -72,7 +73,7 @@ class MTS_EXPORT_RENDER TransientSamplingIntegrator
     : public TransientIntegrator<Float, Spectrum> {
 public:
     MTS_IMPORT_BASE(TransientIntegrator)
-    MTS_IMPORT_TYPES(Scene, Sensor, StreakFilm, StreakImageBlock, Medium, Sampler)
+    MTS_IMPORT_TYPES(Emitter, Scene, Sensor, StreakFilm, StreakImageBlock, Medium, Sampler, Texture)
 
     /**
      * \brief Sample the incident radiance along a ray.
@@ -170,6 +171,8 @@ protected:
                        std::vector<FloatTimeSample<Float, Mask>> &aovsRecordVector,
                        const Vector2f &pos, ScalarFloat diff_scale_factor,
                        Mask active = true) const;
+
+    void emitter_transform(Scene *scene);  
 
 protected:
     /// Integrators should stop all work when this flag is set to true.

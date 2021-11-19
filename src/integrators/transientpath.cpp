@@ -146,68 +146,10 @@ public:
                                 active_e);
                     };
 
-                if (!m_nlos_emitter_sampling) {
-                    // same emitter sampling as before
-                    f_emitter_sample(scene, sampler, ctx, si, active_e,
-                                     timed_samples_record, bsdf, throughput,
-                                     path_opl, current_ior, depth);
-                } else {
-                    // nlos scenes only have one laser emitter - standard
-                    // emitter sampling techniques do not apply as most
-                    // directions do not emit any radiance, it needs to be very
-                    // lucky to bsdf sample the exact point that the laser is
-                    // illuminating
-                    //
-                    // this modifies the emitter sampling so instead of directly
-                    // sampling the laser we sample (1) the point that the laser
-                    // is illuminating and then (2) the laser
-
-                    // 1. Obtain direction to NLOS illuminated point
-                    //    and test visibility with ray_test
-                    Vector3f d = nlos_laser_target - si.p;
-                    Float dist = norm(d);
-                    d /= dist;
-                    Ray3f ray_bsdf(si.p, d,
-                                   math::RayEpsilon<Float> *
-                                       (1.f + hmax(abs(si.p))),
-                                   dist * (1.f - math::ShadowEpsilon<Float>),
-                                   si.time, si.wavelengths);
-                    // active rays are those that did NOT intersect
-                    active_e &= !scene->ray_test(ray_bsdf, active_e);
-
-                    // 2. Evaluate BSDF to desired direction
-                    if (any_or<true>(active_e)) {
-                        Vector3f wo       = si.to_local(d);
-                        Spectrum bsdf_val = bsdf->eval(ctx, si, wo, active_e);
-                        bsdf_val = si.to_world_mueller(bsdf_val, -wo, si.wi);
-
-                        ray_bsdf.maxt = math::Infinity<Float>;
-                        SurfaceInteraction3f si_bsdf =
-                            scene->ray_intersect(ray_bsdf, active_e);
-                        active_e &= si_bsdf.is_valid();
-                        active_e &= any_inner(
-                            depolarize<Spectrum>(bsdf_val) > math::Epsilon<Float>);
-
-                        // NOTE(diego): as points are not randomly chosen,
-                        // we need to account for d^2 and cos term because of
-                        // the solid angle projection of si.p to
-                        // nlos_laser_target. The incident cos term at
-                        // nlos_laser_target will be taken into account by
-                        // f_emitter_sample's bsdf
-                        bsdf_val *= rcp(sqr(dist)) * Frame3f::cos_theta(wo);
-
-                        if (any(active_e)) {
-                            BSDFPtr bsdf_next = si_bsdf.bsdf(ray_bsdf);
-
-                            // 3. Combine nlos + emitter sampling
-                            f_emitter_sample(scene, sampler, ctx, si_bsdf,
-                                             active_e, timed_samples_record,
-                                             bsdf_next, throughput * bsdf_val,
-                                             path_opl + dist * current_ior,
-                                             current_ior, depth + 1);
-                        }
-                    }
-                }
+				// same emitter sampling as before
+				f_emitter_sample(scene, sampler, ctx, si, active_e,
+								 timed_samples_record, bsdf, throughput,
+								 path_opl, current_ior, depth);
             }
 
             // ----------------------- BSDF sampling ----------------------

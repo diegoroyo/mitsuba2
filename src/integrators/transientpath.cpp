@@ -26,6 +26,39 @@ public:
         m_nlos_emitter_sampling = props.bool_("nlos_emitter_sampling", false);
     }
 
+    
+    void emitter_transform(Scene *scene){
+        auto &emitters = const_cast<std::vector<ref<Emitter>> &>(scene->emitters());
+        if (unlikely(emitters.size() != 1)) {
+            Throw("NLOS emitter sampling is not implemented for scenes "
+                    "with more than one emitter.");
+        }
+
+        Float time = 0.0; 
+        Transform4f trafo =
+            emitters[0]->world_transform()->eval(time, true);
+        Vector3f laser_dir = trafo.transform_affine(Vector3f(0, 0, 1));
+        Ray3f ray_laser(trafo.translation(), laser_dir, time);
+        // Laser intersection to surface
+        SurfaceInteraction si_laser_target = scene->ray_intersect(ray_laser, true);
+
+        // Point in the surface (really close to be reached)
+        Vector3f point_light_pos = si_laser_target.p - si_laser_target.n*0.001;
+        // Point light properties
+        Properties pl_props("point");
+        pl_props.set_array3f("position", point_light_pos);
+        pl_props.texture<Texture>("intensity", Texture::D65(0.000001f));
+
+        // Creates a pointlight
+        auto pmgr = PluginManager::instance();
+        auto nlos_laser_target  =
+            static_cast<Emitter *>( pmgr->create_object<Emitter>(pl_props) );
+
+        // Put the new pointlight into the scene
+        emitters.clear();
+        emitters.push_back(nlos_laser_target);
+    }
+
     void sample(const Scene *scene, Sampler *sampler, const RayDifferential3f &ray_,
                 const Medium * /* medium */,
                 std::vector<FloatTimeSample<Float, Mask>> & /* aovs_record */,

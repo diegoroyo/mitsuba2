@@ -57,43 +57,8 @@ MTS_VARIANT std::vector<std::string> TransientSamplingIntegrator<Float, Spectrum
     return { };
 }
 
-MTS_VARIANT void TransientSamplingIntegrator<Float, Spectrum>::emitter_transform(Scene *scene){
-    auto emitters = scene->emitters();
-    if (unlikely(emitters.size() != 1)) {
-        Throw("NLOS emitter sampling is not implemented for scenes "
-                "with more than one emitter.");
-    }
-    Float time = 0.0; 
-    Transform4f trafo =
-        emitters[0]->world_transform()->eval(time, true);
-    Vector3f laser_dir = trafo.transform_affine(Vector3f(0, 0, 1));
-    Ray3f ray_laser(trafo.translation(), laser_dir, time);
-    // Laser intersection to surface
-    SurfaceInteraction si_laser_target = scene->ray_intersect(ray_laser, true);
-
-    // Point light properties
-    Properties pl_props("point");
-    pl_props.set_array3f("position", si_laser_target.p);
-    pl_props.texture<Texture>("intensity", Texture::D65(0.f));
-
-    // Creates a pointlight
-    auto pmgr = PluginManager::instance();
-    auto nlos_laser_target  =
-        static_cast<Emitter *>( pmgr->create_object<Emitter>(pl_props) );
-
-    // Put the new pointlight into the scene
-    emitters.clear();
-    emitters.push_back(nlos_laser_target);
-
-    //nlos_laser_target->set_scene(scene);
-    //Throw("Añadido");
-}
-
 
 MTS_VARIANT bool TransientSamplingIntegrator<Float, Spectrum>::render(Scene *scene, Sensor *sensor) {
-    // Move the emitter if needed
-    emitter_transform(scene);
-
     ScopedPhase sp(ProfilerPhase::Render);
     m_stop = false;
 

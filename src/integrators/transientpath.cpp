@@ -1,9 +1,11 @@
 #include <enoki/stl.h>
 #include <mitsuba/core/properties.h>
 #include <mitsuba/core/ray.h>
+#include <mitsuba/core/plugin.h>
 #include <mitsuba/render/ior.h>
 #include <mitsuba/render/bsdf.h>
 #include <mitsuba/render/emitter.h>
+#include <mitsuba/render/texture.h>
 #include <mitsuba/render/records.h>
 #include <mitsuba/render/transientintegrator.h>
 #include <random>
@@ -14,7 +16,7 @@ template <typename Float, typename Spectrum>
 class TransientPathIntegrator : public TransientMonteCarloIntegrator<Float, Spectrum> {
 public:
     MTS_IMPORT_BASE(TransientMonteCarloIntegrator, m_max_depth, m_rr_depth)
-    MTS_IMPORT_TYPES(Scene, Sampler, Medium, Emitter, EmitterPtr, BSDF, BSDFPtr)
+    MTS_IMPORT_TYPES(Scene, Texture, Sampler, Medium, Emitter, EmitterPtr, BSDF, BSDFPtr)
 
     TransientPathIntegrator(const Properties &props) : Base(props) {
         m_filter_depth = props.int_("filter_depth", -1);
@@ -24,39 +26,7 @@ public:
         // avoid the case m_discard_direct_paths && m_filter_depth > 0
         Assert(!m_discard_direct_paths || m_filter_depth <= 0);
         m_nlos_emitter_sampling = props.bool_("nlos_emitter_sampling", false);
-    }
-
-    
-    void emitter_transform(Scene *scene){
-        auto &emitters = const_cast<std::vector<ref<Emitter>> &>(scene->emitters());
-        if (unlikely(emitters.size() != 1)) {
-            Throw("NLOS emitter sampling is not implemented for scenes "
-                    "with more than one emitter.");
-        }
-
-        Float time = 0.0; 
-        Transform4f trafo =
-            emitters[0]->world_transform()->eval(time, true);
-        Vector3f laser_dir = trafo.transform_affine(Vector3f(0, 0, 1));
-        Ray3f ray_laser(trafo.translation(), laser_dir, time);
-        // Laser intersection to surface
-        SurfaceInteraction si_laser_target = scene->ray_intersect(ray_laser, true);
-
-        // Point in the surface (really close to be reached)
-        Vector3f point_light_pos = si_laser_target.p - si_laser_target.n*0.001;
-        // Point light properties
-        Properties pl_props("point");
-        pl_props.set_array3f("position", point_light_pos);
-        pl_props.texture<Texture>("intensity", Texture::D65(0.000001f));
-
-        // Creates a pointlight
-        auto pmgr = PluginManager::instance();
-        auto nlos_laser_target  =
-            static_cast<Emitter *>( pmgr->create_object<Emitter>(pl_props) );
-
-        // Put the new pointlight into the scene
-        emitters.clear();
-        emitters.push_back(nlos_laser_target);
+        surface_light = nullptr;
     }
 
     void sample(const Scene *scene, Sampler *sampler, const RayDifferential3f &ray_,
@@ -147,37 +117,59 @@ public:
                             const BSDFPtr &bsdf, const Spectrum &throughput,
                             const Float &path_opl, const Float &current_ior,
                             const int &depth) {
-                        auto [ds, emitter_val] =
-                            scene->sample_emitter_direction(
-                                si, sampler->next_2d(active_e), true, active_e);
+
+                    DirectionSample3f ds;
+                    Spectrum emitter_val;
+                    if(m_nlos_emitter_sampling){
+                        surface_emitter(scene);     // Set-up the surface emitter
+
+                        // Fast path to the emitter
+                        std::tie(ds, emitter_val) = 
+                            surface_light->sample_direction(si,
+                                            sampler->next_2d(active_e), active_e);
                         active_e &= neq(ds.pdf, 0.f);
 
-                        // Query the BSDF for that emitter-sampled direction
-                        Vector3f wo       = si.to_local(ds.d);
-                        Spectrum bsdf_val = select(
-                            neq(bsdf, nullptr),
-                            si.to_world_mueller(
-                                bsdf->eval(ctx, si, wo, active_e), -wo, si.wi),
-                            0.0f);
+                        // Perform a visibility test if requested
+                        if (any_or<true>(active_e)) {
+                            Ray3f ray(si.p, ds.d, 
+                                    math::RayEpsilon<Float> * (1.f + hmax(abs(si.p))),
+                                    ds.dist * (1.f - math::ShadowEpsilon<Float>),
+                                    si.time, si.wavelengths);
+                            emitter_val[scene->ray_test(ray, active_e)] = 0.f;
+                        }
+                    } else
+                        std::tie(ds, emitter_val) =
+                            scene->sample_emitter_direction(
+                                si, sampler->next_2d(active_e), true, active_e);
+                    
+                    active_e &= neq(ds.pdf, 0.f);
 
-                        // Determine density of sampling that same direction
-                        // using BSDF sampling
-                        Float bsdf_pdf =
-                            select(neq(bsdf, nullptr),
-                                   bsdf->pdf(ctx, si, wo, active_e), 0.0f);
+                    // Query the BSDF for that emitter-sampled direction
+                    Vector3f wo       = si.to_local(ds.d);
+                    Spectrum bsdf_val = select(
+                        neq(bsdf, nullptr),
+                        si.to_world_mueller(
+                            bsdf->eval(ctx, si, wo, active_e), -wo, si.wi),
+                        0.0f);
 
-                        Float mis =
-                            select(ds.delta, 1.f, mis_weight(ds.pdf, bsdf_pdf));
+                    // Determine density of sampling that same direction
+                    // using BSDF sampling
+                    Float bsdf_pdf =
+                        select(neq(bsdf, nullptr),
+                                bsdf->pdf(ctx, si, wo, active_e), 0.0f);
 
-                        Spectrum radiance(0.f);
-                        radiance[active_e] +=
-                            mis * throughput * bsdf_val * emitter_val;
+                    Float mis =
+                        select(ds.delta, 1.f, mis_weight(ds.pdf, bsdf_pdf));
 
-                        if (depth == m_filter_depth || (!m_discard_direct_paths || depth >= 2))
-                            timed_samples_record.emplace_back(
-                                path_opl + ds.dist * current_ior, radiance,
-                                active_e);
-                    };
+                    Spectrum radiance(0.f);
+                    radiance[active_e] +=
+                        mis * throughput * bsdf_val * emitter_val;
+
+                    if (depth == m_filter_depth || (!m_discard_direct_paths || depth >= 2))
+                        timed_samples_record.emplace_back(
+                            path_opl + ds.dist * current_ior, radiance,
+                            active_e);
+                };
 
 				// same emitter sampling as before
 				f_emitter_sample(scene, sampler, ctx, si, active_e,
@@ -242,9 +234,75 @@ public:
 
     MTS_DECLARE_CLASS()
 private:
+    // Return the laser-projection emitter of the scene into a pointlight in the
+    // relly surface
+    EmitterPtr surface_emitter(const Scene *scene){
+        if(!surface_light){
+            auto emitters = scene->emitters();
+            if (unlikely(emitters.size() != 1)) {
+                Throw("NLOS emitter sampling is not implemented for scenes "
+                        "with more than one emitter.");
+            }
+
+            Float time = 0.0; 
+            Transform4f trafo =
+                emitters[0]->world_transform()->eval(time, true);
+            Vector3f laser_dir = trafo.transform_affine(Vector3f(0, 0, 1));
+            Ray3f ray_laser(trafo.translation(), laser_dir, time);
+            // Laser intersection to surface
+            SurfaceInteraction si_laser_target = scene->ray_intersect(ray_laser, true);
+
+            // Point in the surface (really close to be reached)
+            Vector3f point_light_pos = si_laser_target.p - si_laser_target.n*0.001;
+            // Point light properties
+            Properties pl_props("point");
+            pl_props.set_array3f("position", point_light_pos);
+            pl_props.texture<Texture>("intensity", Texture::D65(1.0f));
+
+            // Returns a pointlight
+            auto pmgr = PluginManager::instance();
+            surface_light = 
+                static_cast<Emitter *>( pmgr->create_object<Emitter>(pl_props) );
+        }
+        return surface_light;
+    }
+
+    EmitterPtr surface_emitter(const Scene *scene) const{
+        if(!surface_light){
+            auto emitters = scene->emitters();
+            if (unlikely(emitters.size() != 1)) {
+                Throw("NLOS emitter sampling is not implemented for scenes "
+                        "with more than one emitter.");
+            }
+
+            Float time = 0.0; 
+            Transform4f trafo =
+                emitters[0]->world_transform()->eval(time, true);
+            Vector3f laser_dir = trafo.transform_affine(Vector3f(0, 0, 1));
+            Ray3f ray_laser(trafo.translation(), laser_dir, time);
+            // Laser intersection to surface
+            SurfaceInteraction si_laser_target = scene->ray_intersect(ray_laser, true);
+
+            // Point in the surface (really close to be reached)
+            Vector3f point_light_pos = si_laser_target.p - si_laser_target.n*0.001;
+            // Point light properties
+            Properties pl_props("point");
+            pl_props.set_array3f("position", point_light_pos);
+            pl_props.texture<Texture>("intensity", Texture::D65(1.0f));
+
+            // Returns a pointlight
+            auto pmgr = PluginManager::instance();
+            return
+                static_cast<Emitter *>( pmgr->create_object<Emitter>(pl_props) );
+        }
+        return surface_light;
+    }
+
+
     int m_filter_depth;
     bool m_discard_direct_paths;
     bool m_nlos_emitter_sampling;
+    EmitterPtr surface_light;
 };
 
 MTS_IMPLEMENT_CLASS_VARIANT(TransientPathIntegrator, TransientMonteCarloIntegrator)

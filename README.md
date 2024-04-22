@@ -9,6 +9,13 @@
 
 Mitsuba 2, extended for transient path tracing and non-line-of-sight data capture.
 
+<br><br>
+---
+> [⚠️⚠️ **Please use the new and updated Mitsuba 3 version instead!** ⚠️⚠️](https://github.com/diegoroyo/mitsuba3-transient-nlos) <br>
+> [This repository is not maintained anymore. Please check out the new version, which uses Mitsuba 3 instead of Mitsuba 2. It has much faster render times and allows to use vectorized CPU and GPU modes very easily through the use of Dr.JIT. Click here to check out the new Mitsuba 3 version.](https://github.com/diegoroyo/mitsuba3-transient-nlos)
+---
+<br><br>
+
 ## Documentation and usage
 
 **See 
